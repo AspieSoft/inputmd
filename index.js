@@ -9,6 +9,9 @@ const express = requireOptional('express');
 const __ModuleVersion = '0.0.1';
 
 
+// todo: add vscode extension for imdl syntax highlighting
+
+
 function timeToMS(time){
   if(!time){return undefined;}
   if(typeof time === 'number'){
