@@ -13,7 +13,7 @@ const debugSpeed = debug.time({
   slowOnly: true
 });
 
-const __ModuleVersion = '0.0.1';
+const __ModuleVersion = '0.0.2';
 
 
 // todo: add vscode extension for imdl syntax highlighting
