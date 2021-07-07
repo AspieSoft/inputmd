@@ -1,10 +1,17 @@
 const fs = require('fs');
 const {join, dirname} = require('path');
 
+const debug = requireOptional('./debug') || require('./debug_null');
+
 const cwscLib = require('@aspiesoft/cwsclib');
+const LZUTF8 = require('lzutf8');
 
 const express = requireOptional('express');
 
+const debugSpeed = debug.time({
+  minSpeed: 0.7,
+  slowOnly: true
+});
 
 const __ModuleVersion = '0.0.1';
 
@@ -46,14 +53,38 @@ function timeToMS(time){
 }
 
 const info = {
-  cache: timeToMS('2h'),
   ext: 'imdl',
-  dir: join(dirname(require.main.filename), 'views') || undefined
+  dir: join(dirname(require.main.filename), 'views') || undefined,
+  cache: timeToMS('2h'),
+  cacheInterval: timeToMS('10m'),
+  logSpeed: false
 };
 
 const cache = {};
 
-const inDev = process.env.NODE_ENV !== 'production';
+let inDev = process.env.NODE_ENV !== 'production';
+
+
+function compress(str, speed){
+  const debugTime = debugSpeed.new();
+
+  debugTime('compress');
+
+  str = LZUTF8.compress(str, {outputEncoding: 'ByteArray'});
+
+  debugTime('compress');
+
+  return {
+    decomp: function(){
+      debugTime('decompress');
+
+      const result = LZUTF8.decompress(str, {inputEncoding: 'ByteArray'});
+
+      debugTime('decompress');
+      return result;
+    }
+  };
+}
 
 
 function startCache(){
@@ -66,10 +97,13 @@ function startCache(){
         delete cache[cacheList[i]];
       }
     }
-  }, 10000);
-}
-if(!inDev){
-  startCache();
+  }, info.cacheInterval);
+
+  fs.watch(info.dir, (event, file) => {
+    if(file){
+      delete cache[file.replace(/\.\w+$/, '')];
+    }
+  });
 }
 
 
@@ -82,29 +116,37 @@ function requireOptional(path){
 }
 
 function getCache(path){
-  if(inDev || cache[path] === undefined){return undefined;}
-  if(cache[path].data === false){
+  let cid = path.replace(info.dir, '').replace(/^[\/\\]+/, '').replace(/\.\w+$/, '');
+  if(inDev || cache[cid] === undefined){return undefined;}
+  cache[cid].time = new Date().getTime();
+  if(cache[cid].data === false){
     return false;
   }
-  return cache[path].data.decomp();
+  return cache[cid].data;
 }
 
 function setCache(path, data){
+  let cid = path.replace(info.dir, '').replace(/^[\/\\]+/, '').replace(/\.\w+$/, '');
   if(inDev){return undefined;}
   if(data === false){
-    cache[path] = {data: false, time: new Data().getTime()};
+    cache[cid] = {data: false, time: new Date().getTime()};
     return;
   }
-  cache[path] = {data: cwscLib.compress(data, 5), time: new Data().getTime()};
+  if(typeof data === 'string'){
+    data = compress(data, 5);
+  }
+  cache[cid] = {data, time: new Date().getTime()};
 }
 
 
 function engine(path, opts, cb){
+  if(info.logSpeed){opts.startTime = new Date().getTime();}
   if(!info.ext){info.ext = path.substr(path.lastIndexOf('.'));}
   if(!info.dir){info.dir = join(path, '..');}
-  let cid = path.replace(info.dir, '');
+  let cid = path.replace(info.dir, '').replace(/^[\/\\]+/, '').replace(/\.\w+$/, '');
   let data = getCache(cid);
   if(data === false){return undefined;}
+  if(info.logSpeed){opts['time:'+cid] = {};}
   if(!data){
     if(!path.startsWith(info.dir)){path = join(info.dir, path);}
     if(!path.endsWith('.'+info.ext)){path += '.'+info.ext;}
@@ -114,43 +156,76 @@ function engine(path, opts, cb){
         return cb(err);
       }
       data = data.toString();
+      if(info.logSpeed){opts['time:'+cid].startCompile = new Date().getTime();}
       if(info.beforeCompile){
-        let d = info.beforeCompile(data, opts);
+        let d = info.beforeCompile.call({path, cid, data}, opts);
         if(d !== undefined){data = d;}
       }
       data = compile(data);
       setCache(cid, data);
+      if(info.logSpeed){
+        opts['time:'+cid].startRender = new Date().getTime();
+        if(opts['time:'+cid].startCompile){
+          console.log(`\x1b[31mCompiled \x1b[34m${cid} \x1b[31mIn \x1b[34m${opts['time:'+cid].startRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+        }
+      }
       if(info.before){
-        let d = info.before(data, opts);
+        let d = info.before.call({path, cid, data}, opts);
         if(d !== undefined){data = d;}
       }
       data = insertInputs(data, opts);
+      if(info.logSpeed){
+        opts['time:'+cid].finishRender = new Date().getTime();
+        if(opts['time:'+cid].startCompile){
+          console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms \x1b[35mTotal \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+        }else{
+          console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms\x1b[0m`);
+        }
+      }
       if(info.after){
-        let d = info.after(data, opts);
+        let d = info.after.call({path, cid, data}, opts);
         if(d !== undefined){data = d;}
       }
+      if(info.logSpeed){console.log(`\x1b[32mLoaded \x1b[33m${cid} \x1b[32mIn \x1b[33m${new Date().getTime() - opts.startTime}ms\x1b[0m`);}
       return cb(null, data.toString());
     });
   }else{
+    if(info.logSpeed){
+      opts['time:'+cid].startRender = new Date().getTime();
+      if(opts['time:'+cid].startCompile){
+        console.log(`\x1b[31mCompiled \x1b[34m${cid} \x1b[31mIn \x1b[34m${opts['time:'+cid].startRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+      }
+    }
     if(info.before){
-      let d = info.before(data, opts);
+      let d = info.before.call({path, cid, data}, opts);
       if(d !== undefined){data = d;}
     }
     data = insertInputs(data, opts);
+    if(info.logSpeed){
+      opts['time:'+cid].finishRender = new Date().getTime();
+      if(opts['time:'+cid].startCompile){
+        console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms \x1b[35mTotal \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+      }else{
+        console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms\x1b[0m`);
+      }
+    }
     if(info.after){
-      let d = info.after(data, opts);
+      let d = info.after.call({path, cid, data}, opts);
       if(d !== undefined){data = d;}
     }
+    if(info.logSpeed){console.log(`\x1b[32mLoaded \x1b[33m${cid} \x1b[32mIn \x1b[33m${new Date().getTime() - opts.startTime}ms\x1b[0m`);}
     return cb(null, data.toString());
   }
 }
 
 function render(path, opts, skipTemplate){
+  if(info.logSpeed && !skipTemplate){opts.startTime = new Date().getTime();}
   if(!info.ext){info.ext = path.substr(path.lastIndexOf('.'));}
   if(!info.dir){info.dir = join(path, '..');}
-  let cid = path.replace(info.dir, '');
+  let cid = path.replace(info.dir, '').replace(/^[\/\\]+/, '').replace(/\.\w+$/, '');
   let data = getCache(cid);
   if(data === false){return undefined;}
+  if(info.logSpeed){opts['time:'+cid] = {};}
   if(!data){
     if(!path.startsWith(info.dir)){path = join(info.dir, path);}
     if(!path.endsWith('.'+info.ext)){path += '.'+info.ext;}
@@ -160,42 +235,76 @@ function render(path, opts, skipTemplate){
         return undefined;
       }
       data = data.toString();
+      if(info.logSpeed){opts['time:'+cid].startCompile = new Date().getTime();}
       if(info.beforeCompile){
-        let d = info.beforeCompile(data, opts);
+        let d = info.beforeCompile.call({path, cid, data}, opts);
         if(d !== undefined){data = d;}
       }
       data = compile(data);
       setCache(cid, data);
+      if(info.logSpeed){
+        opts['time:'+cid].startRender = new Date().getTime();
+        if(opts['time:'+cid].startCompile){
+          console.log(`\x1b[31mCompiled \x1b[34m${cid} \x1b[31mIn \x1b[34m${opts['time:'+cid].startRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+        }
+      }
       if(info.before){
-        let d = info.before(data, opts);
+        let d = info.before.call({path, cid, data}, opts);
         if(d !== undefined){data = d;}
       }
       data = insertInputs(data, opts, skipTemplate);
+      if(info.logSpeed){
+        opts['time:'+cid].finishRender = new Date().getTime();
+        if(opts['time:'+cid].startCompile){
+          console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms \x1b[35mTotal \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+        }else{
+          console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms\x1b[0m`);
+        }
+      }
       if(info.after){
-        let d = info.after(data, opts);
+        let d = info.after.call({path, cid, data}, opts);
         if(d !== undefined){data = d;}
       }
+      if(info.logSpeed && !skipTemplate){console.log(`\x1b[32mLoaded \x1b[33m${cid} \x1b[32mIn \x1b[33m${new Date().getTime() - opts.startTime}ms\x1b[0m`);}
       return data.toString();
     });
   }else{
+    if(info.logSpeed){
+      opts['time:'+cid].startRender = new Date().getTime();
+      if(opts['time:'+cid].startCompile){
+        console.log(`\x1b[31mCompiled \x1b[34m${cid} \x1b[31mIn \x1b[34m${opts['time:'+cid].startRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+      }
+    }
     if(info.before){
-      let d = info.before(data, opts);
+      let d = info.before.call({path, cid, data}, opts);
       if(d !== undefined){data = d;}
     }
     data = insertInputs(data, opts, skipTemplate);
+    if(info.logSpeed){
+      opts['time:'+cid].finishRender = new Date().getTime();
+      if(opts['time:'+cid].startCompile){
+        console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms \x1b[35mTotal \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+      }else{
+        console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms\x1b[0m`);
+      }
+    }
     if(info.after){
-      let d = info.after(data, opts);
+      let d = info.after.call({path, cid, data}, opts);
       if(d !== undefined){data = d;}
     }
+    if(info.logSpeed && !skipTemplate){console.log(`\x1b[32mLoaded \x1b[33m${cid} \x1b[32mIn \x1b[33m${new Date().getTime() - opts.startTime}ms\x1b[0m`);}
     return data.toString();
   }
 }
 
 
-function getFile(path, opts, skipTemplate){
-  let cid = path.replace(info.dir, '');
+function getFile(path, opts, skipTemplate, skipCompile){
+  if(info.logSpeed && !skipTemplate){opts.startTime = new Date().getTime();}
+  let cid = path.replace(info.dir, '').replace(/^[\/\\]+/, '').replace(/\.\w+$/, '');
+  if(skipCompile){cid += '>raw';}
   let data = getCache(cid);
   if(data === false){return undefined;}
+  if(info.logSpeed){opts['time:'+cid] = {};}
   if(!data){
     if(!path.startsWith(info.dir)){path = join(info.dir, path);}
     if(!path.endsWith('.'+info.ext)){path += '.'+info.ext;}
@@ -206,31 +315,57 @@ function getFile(path, opts, skipTemplate){
         setCache(cid, false);
         return undefined;
       }
-      if(info.beforeCompile){
-        let d = info.beforeCompile(data, opts);
-        if(d !== undefined){data = d;}
+      if(!skipCompile){
+        if(info.logSpeed){opts['time:'+cid].startCompile = new Date().getTime();}
+        if(info.beforeCompile){
+          let d = info.beforeCompile.call({path, cid, data}, opts);
+          if(d !== undefined){data = d;}
+        }
+        data = compile(data);
+      }else{
+        data = {
+          html: compress(data, 5), tags: {}
+        };
       }
-      data = compile(data);
       setCache(cid, data);
     }else{
       setCache(cid, false);
       return undefined;
     }
   }
+  if(info.logSpeed){
+    opts['time:'+cid].startRender = new Date().getTime();
+    if(opts['time:'+cid].startCompile){
+      console.log(`\x1b[31mCompiled \x1b[34m${cid} \x1b[31mIn \x1b[34m${opts['time:'+cid].startRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+    }
+  }
   if(info.before){
-    let d = info.before(data, opts);
+    let d = info.before.call({path, cid, data}, opts);
     if(d !== undefined){data = d;}
   }
   data = insertInputs(data, opts, skipTemplate);
+  if(info.logSpeed){
+    opts['time:'+cid].finishRender = new Date().getTime();
+    if(opts['time:'+cid].startCompile){
+      console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms \x1b[35mTotal \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startCompile}ms\x1b[0m`);
+    }else{
+      console.log(`\x1b[35mRendered \x1b[36m${cid} \x1b[35mIn \x1b[36m${opts['time:'+cid].finishRender - opts['time:'+cid].startRender}ms\x1b[0m`);
+    }
+  }
   if(info.after){
-    let d = info.after(data, opts);
+    let d = info.after.call({path, cid, data}, opts);
     if(d !== undefined){data = d;}
   }
+  if(info.logSpeed && !skipTemplate){console.log(`\x1b[32mLoaded \x1b[33m${cid} \x1b[32mIn \x1b[33m${new Date().getTime() - opts.startTime}ms\x1b[0m`);}
   return data.toString();
 }
 
 
 function compile(data){
+
+  const debugTime = debugSpeed.new();
+
+  debugTime('comp: entities');
   // escape special entities
   data = data.replace(/&;|&(\+-|\?=|\^\/|!=|<=|>=|#[scropid]|\$[cpeyruw]|#pi|[<>&\\\/"'`?=$#*]);?/gsi, (_, char) => {
     if(!char){return '&amp;';}
@@ -269,12 +404,18 @@ function compile(data){
       default: return '';
     }
   });
+  debugTime('comp: entities');
 
+  debugTime('comp: comments');
   // strip comments
   data = data.replace(/<!--.*?-->/gs, '');
   data = data.replace(/^[\s\t ]*\/\*([\r\n]|.)*?^[\s\t ]*\*\//gm, '');
   data = data.replace(/^[\s\t ]*\/\/.*$/gm, '');
+  debugTime('comp: comments');
 
+
+  // slow 4ms
+  debugTime('comp: extract');
   // extract scripts, styles, links, and metadata
   const pulledTags = {
     script: [],
@@ -284,8 +425,9 @@ function compile(data){
   };
   let includeScripts = {};
 
-  data.replace(/\<(script|style)((?:[\s\t\n\r\v ]+[\w_$-]+=(?:"((?<!\\)\\"|.)*?"|'((?<!\\)\\'|.)*?'))*|)\>(.+?)\<\/\1\>/gsi, (str, tag, attrs, content) => {
-    if(tag.toLowerCase() === 'script'){
+  data = data.replace(/\<(script|style)((?:[\s\t\n\r\v ]+[\w_$-]+=(?:"(?:(?<!\\)\\"|.)*?"|'(?:(?<!\\)\\'|.)*?'))*|)\>(.+?)\<\/\1\>/gsi, (str, tag, attrs, content) => {
+    tag = tag.toLowerCase();
+    if(tag === 'script'){
       if(info.script){
         let attrList = {};
         attrs.replace(/[\s\t\n\r\v ]+([\w_$-]+)=(["']|)((?:(?<!\\)\\["']|.)*?)\2/gs, (_, attr, q, cont) => {
@@ -293,10 +435,9 @@ function compile(data){
         });
         content = info.script(content, attrList);
       }
-      let i = pulledTags.script.push(cwscLib.compress(`<script${attrs}>${content}</script>`, 3));
+      let i = pulledTags.script.push(compress(`<script${attrs}>${content}</script>`, 3));
       return `<@script:${i}>`;
-    }
-    if(tag.toLowerCase() === 'style'){
+    }else if(tag === 'style'){
       if(info.style){
         let attrList = {};
         attrs.replace(/[\s\t\n\r\v ]+([\w_$-]+)=(["']|)((?:(?<!\\)\\["']|.)*?)\2/gs, (_, attr, q, cont) => {
@@ -304,14 +445,15 @@ function compile(data){
         });
         content = info.style(content, attrList);
       }
-      let i = pulledTags.style.push(cwscLib.compress(`<style${attrs}>${content}</style>`, 3));
+      let i = pulledTags.style.push(compress(`<style${attrs}>${content}</style>`, 3));
       return `<@style:${i}>`;
     }
     return str;
   });
 
-  data = data.replace(/\<(link|meta)((?:[\s\t\n\r\v ]+[\w_$-]+=(?:"((?<!\\)\\"|.)*?"|'((?<!\\)\\'|.)*?'))*|)\>/gsi, (str, tag, attrs) => {
-    if(tag.toLowerCase() === 'link'){
+  data = data.replace(/\<(link|meta|js|css)((?:[\s\t\n\r\v ]+[\w_$-]+=(?:"(?:(?<!\\)\\"|.)*?"|'(?:(?<!\\)\\'|.)*?'))*|)\/?\>/gsi, (str, tag, attrs) => {
+    tag = tag.toLowerCase();
+    if(tag === 'link'){
       if(info.link){
         let attrList = {};
         attrs.replace(/[\s\t\n\r\v ]+([\w_$-]+)=(["']|)((?:(?<!\\)\\["']|.)*?)\2/gs, (_, attr, q, cont) => {
@@ -319,10 +461,9 @@ function compile(data){
         });
         content = info.link(content, attrList);
       }
-      let i = pulledTags.link.push(cwscLib.compress(`<link${attrs}>`, 1));
+      let i = pulledTags.link.push(compress(`<link${attrs}>`, 1));
       return `<@link:${i}>`;
-    }
-    if(tag.toLowerCase() === 'meta'){
+    }else if(tag === 'meta'){
       if(info.meta){
         let attrList = {};
         attrs.replace(/[\s\t\n\r\v ]+([\w_$-]+)=(["']|)((?:(?<!\\)\\["']|.)*?)\2/gs, (_, attr, q, cont) => {
@@ -330,37 +471,133 @@ function compile(data){
         });
         content = info.meta(content, attrList);
       }
-      let i = pulledTags.meta.push(cwscLib.compress(`<meta${attrs}>`, 1));
+      let i = pulledTags.meta.push(compress(`<meta${attrs}>`, 1));
       return `<@meta:${i}>`;
     }
+
+    if(tag === 'js'){
+      let attrList = {};
+      let qAttrList = {};
+      attrs.replace(/[\s\t\n\r\v ]+([\w_$-]+)=(["']|)((?:(?<!\\)\\["']|.)*?)\2/gs, (_, attr, q, cont) => {
+        attrList[attr] = cont;
+        qAttrList[attr] = q+cont+q;
+      });
+      if(attrList['href'] && !attrList['src']){
+        attrList['src'] = attrList['href'];
+        qAttrList['src'] = qAttrList['href'];
+        delete attrList['href'];
+        delete qAttrList['href'];
+      }
+      if(info.script){
+        content = info.script(content, attrList);
+      }
+      attrs = Object.keys(qAttrList).map(attr => ` ${attr}=${qAttrList[attr]}`).join(' ');
+      let i = pulledTags.script.push(compress(`<script${attrs}></script>`, 1));
+      return `<@script:${i}>`;
+    }else if(tag === 'css'){
+      let attrList = {};
+      let qAttrList = {};
+      attrs.replace(/[\s\t\n\r\v ]+([\w_$-]+)=(["']|)((?:(?<!\\)\\["']|.)*?)\2/gs, (_, attr, q, cont) => {
+        attrList[attr] = cont;
+        qAttrList[attr] = q+cont+q;
+      });
+      if(attrList['src'] && !attrList['href']){
+        attrList['href'] = attrList['src'];
+        qAttrList['href'] = qAttrList['src'];
+        delete attrList['src'];
+        delete qAttrList['src'];
+      }
+      if(attrList['href']){
+        attrList['rel'] = 'stylesheet';
+        qAttrList['rel'] = '"stylesheet"';
+        if(info.link){
+          content = info.link(content, attrList);
+        }
+      }else{
+        if(info.style){
+          content = info.style(content, attrList);
+        }
+      }
+      attrs = Object.keys(qAttrList).map(attr => ` ${attr}=${qAttrList[attr]}`).join(' ');
+      if(attrList['href']){
+        let i = pulledTags.link.push(compress(`<link${attrs}>`, 1));
+        return `<@link:${i}>`;
+      }
+      let i = pulledTags.style.push(compress(`<style${attrs}></style>`, 1));
+      return `<@style:${i}>`;
+    }
+
     return str;
   });
+  debugTime('comp: extract');
+
+  // slow 1.5ms
+  debugTime('comp: markdown');
+  // compile markdown
+  data = compileMarkdown(data);
+  debugTime('comp: markdown');
 
 
-  // compile markdown to html
+  debugTime('comp: include');
+  // add in any scripts that need to be included
+  let include = Object.keys(includeScripts).map(path => {
+    if(path.endsWith('.js')){
+      let i = pulledTags.script.push(compress(`<script src="https://cdn.jsdelivr.net/gh/AspieSoft/inputmd@${__ModuleVersion}/scripts/${path.replace(/[^\w_\-$\/\\@]/).replace(/\.js$/, '.min.js')}"></script>`, 1));
+      return `<@script:${i}>`;
+    }else if(path.endsWith('.css')){
+      let i = pulledTags.link.push(compress(`<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/AspieSoft/inputmd@${__ModuleVersion}/styles/${path.replace(/[^\w_\-$\/\\@]/).replace(/\.css$/, '.min.css')}">`, 1));
+      return `<@link:${i}>`;
+    }
+    return '';
+  }).join('\n');
+  if(data.match(/<\/html>$/)){
+    data = data.replace(/<\/html>$/, include+'\n</html>');
+  }else{
+    data += include;
+  }
+  debugTime('comp: include');
 
+  return {
+    html: compress(data, 5),
+    tags: pulledTags
+  };
+}
+
+
+function compileMarkdown(data){
+
+  const debugTime = debugSpeed.new({minSpeed: 0.2});
+
+  debugTime('md: fonts');
   data = data.replace(/\*\*\*([^*]+)\*\*\*/gs, '<strong><em>$1</em></strong>');
 	data = data.replace(/\*\*([^*]+)\*\*/gs, '<strong>$1</strong>');
 	data = data.replace(/\*([^*]+)\*/gs, '<em>$1</em>');
 
   data = data.replace(/__([^_]+)__/gs, '<u>$1</u>');
 	data = data.replace(/~~([^~]+)~~/gs, '<s>$1</s>');
+  debugTime('md: fonts');
 
+  debugTime('md: headers');
 	data = data.replace(/^\s*######\s*(.+)$/gm, '<h6>$1</h6>');
 	data = data.replace(/^\s*#####\s*(.+)$/gm, '<h5>$1</h5>');
 	data = data.replace(/^\s*####\s*(.+)$/gm, '<h4>$1</h4>');
 	data = data.replace(/^\s*###\s*(.+)$/gm, '<h3>$1</h3>');
 	data = data.replace(/^\s*##\s*(.+)$/gm, '<h2>$1</h2>');
 	data = data.replace(/^\s*#\s*(.+)$/gm, '<h1>$1</h1>');
+  debugTime('md: headers');
 
+  debugTime('md: basic');
   data = data.replace(/^\s*>\s*(.+)$/gm, '<blockquote>$1</blockquote>');
-
 	data = data.replace(/^([-*_]){3,}$/gm, '<hr>');
+  debugTime('md: basic');
 
+  debugTime('md: code');
   data = data.replace(/(?:```([\w_$-])[\r\n]+(.*?)```)/gs, (_, lang, body) => `<pre class="highlight"><code lang="${lang}">${escapeHtml(body)}</code></pre>`);
   data = data.replace(/(?:```(.*?)```)/gs, (_, body) => `<pre class="highlight"><code>${escapeHtml(body)}</code></pre>`);
 	data = data.replace(/(?:`(.*?)`)/gs, (_, body) => `<code>${escapeHtml(body)}</code>`);
+  debugTime('md: code');
 
+  debugTime('md: embed');
   data = data.replace(/\!\[(.*?)\]\((.*?)\)(?:\{(.*?)\}|)/gs, (_, type, src, attrs) => {
     type = type.toLowerCase();
     src = src.split('\n').map(s => s.replace(/([\\"])/g, '\\$1'));
@@ -413,10 +650,14 @@ function compile(data){
       }
     }
   });
+  debugTime('md: embed');
 
+  debugTime('md: link');
   data = data.replace(/\[(.*?)\]\((.*?)\)/gs, (_, text, link) => `<a href="${link.replace(/([\\"])/g, '\\$1')}">${escapeHtml(text)}</a>`);
   data = data.replace(/([^"'`])((?!["'`])https?:\/\/(?:(?:[\w_-][\w_\-.]+)|)(?:(?:[\w.,@?^=%&:/~+#_-]*[\w.,@?^=%&:/~+#_-])|))/g, (_, q, link) => `${q}<a href="${link.replace(/([\\"])/g, '\\$1')}">${escapeHtml(link)}</a>`);
+  debugTime('md: link');
 
+  debugTime('md: list');
   function compileLists(str){
     str = str.replace(/^([\s\t ]*)([0-9]+)\.([\s\t ]*)(.*)$((?:[\r\n]\1[0-9]+\.\3(?:[\r\n]\1\3|.)*)*)/gm, (_, sp1, char, sp2, item, items) => {
       let dir = '';
@@ -451,6 +692,7 @@ function compile(data){
     return str;
   }
   data = compileLists(data);
+  debugTime('md: list');
 
 
   // todo: add support for markdown tables
@@ -459,34 +701,17 @@ function compile(data){
   //todo: also add checklist, definition list, forms, inputs, and more to markdown syntax
 
 
-  // add in any scripts that need to be included
-  let include = Object.keys(includeScripts).map(path => {
-    if(path.endsWith('.js')){
-      let i = pulledTags.script.push(cwscLib.compress(`<script src="https://cdn.jsdelivr.net/gh/AspieSoft/inputmd@${__ModuleVersion}/scripts/${path.replace(/[^\w_\-$\/\\@]/).replace(/\.js$/, '.min.js')}"></script>`, 1));
-      return `<@script:${i}>`;
-    }else if(path.endsWith('.css')){
-      let i = pulledTags.link.push(cwscLib.compress(`<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/AspieSoft/inputmd@${__ModuleVersion}/styles/${path.replace(/[^\w_\-$\/\\@]/).replace(/\.css$/, '.min.css')}">`, 1));
-      return `<@link:${i}>`;
-    }
-    return '';
-  }).join('\n');
-
-  if(data.match(/<\/html>$/)){
-    data.replace(/<\/html>$/, include+'\n</html>');
-  }else{
-    data += include;
-  }
-
-
-  return {
-    html: cwscLib.compress(data, 5),
-    tags: pulledTags
-  };
+  return data;
 }
 
+
 function insertInputs({html, tags}, opts, skipTemplate){
+
+  const debugTime = debugSpeed.new();
+
   html = html.decomp();
 
+  debugTime('ren: inputs');
   html = html.replace(/\{\{\{(.*?)\}\}\}|\{\{(.*?)\}\}/g, (origStr, html, text) => {
     let str = '';
     let esc = true;
@@ -501,7 +726,7 @@ function insertInputs({html, tags}, opts, skipTemplate){
     }
 
     if(str.startsWith('#')){
-      let file = getFile(str.replace('#', ''), opts, true);
+      let file = getFile(str.replace('#', ''), opts, true, esc);
       if(!file){return origStr;}
       if(esc){
         return escapeHtml(file);
@@ -543,12 +768,14 @@ function insertInputs({html, tags}, opts, skipTemplate){
 
     return str;
   });
+  debugTime('ren: inputs');
 
+  debugTime('ren: extracted');
   html = html.replace(/\{\{\{?-(script|style|link|meta)\}\}\}?/gs, (str, tag) => {
     if(['script', 'style', 'link', 'meta'].includes(tag.toLowerCase())){
       let result = [];
       for(let i = 0; i < tags[tag].length; i++){
-        result.push(tags[tag][i]);
+        result.push(tags[tag][i].decomp());
       }
       tags[tag] = undefined;
       return result.join('\n');
@@ -556,19 +783,23 @@ function insertInputs({html, tags}, opts, skipTemplate){
     return str;
   });
 
-  html = html.replace(/\<@(script|style|link|meta):([0-9]+)\>/g, (tag, i) => {
-    if(tags[tag] && tags[tag][Number(i)]){
+  html = html.replace(/\<@(script|style|link|meta):([0-9]+)\>/g, (_, tag, i) => {
+    i = Number(i)-1;
+    if(tags[tag] && tags[tag][i]){
       if(opts.nonce){
         if(typeof opts.nonce === 'object' && opts.nonce[tag]){
-          return tags[tag][Number(i)].replace(/\>$/, ` nonce="${opts.nonce[tag]}">`);
+          return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce[tag]}">`);
         }else if(tag === 'script'){
-          return tags[tag][Number(i)].replace(/\>$/, ` nonce="${opts.nonce}">`);
+          return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce}">`);
         }
       }
-      return tags[tag][Number(i)];
+      return tags[tag][i].decomp();
     }
     return '';
   });
+  debugTime('ren: extracted');
+
+  html = html.replace(/\{\{\{?.*?\}\}\}?/g, '');
 
   if(info.template && !skipTemplate && !opts.noTemplate && !opts.noLayout){
     return getFile(info.template, {body: html, ...opts}, true);
@@ -598,11 +829,13 @@ module.exports = (function(){
         info.before = opts.before;
         info.after = opts.after;
         info.cache = timeToMS(opts.cache) || info.cache;
+        info.cacheInterval = timeToMS(opts.cacheInterval) || timeToMS(opts.cacheSpeed) || info.cacheInterval;
         info.script = opts.script || opts.js;
         info.style = opts.style || opts.css;
         info.link = opts.link;
         info.meta = opts.meta;
       }
+      if(!inDev){startCache();}
       return engine;
     }else if(typeof pathOrOpts === 'object'){
       info.ext = pathOrOpts.ext || pathOrOpts.type || info.ext;
@@ -612,12 +845,15 @@ module.exports = (function(){
       info.before = pathOrOpts.before;
       info.after = pathOrOpts.after;
       info.cache = timeToMS(pathOrOpts.cache) || info.cache;
+      info.cacheInterval = timeToMS(opts.cacheInterval) || timeToMS(opts.cacheSpeed) || info.cacheInterval;
       info.script = pathOrOpts.script || pathOrOpts.js;
       info.style = pathOrOpts.style || pathOrOpts.css;
       info.link = pathOrOpts.link;
       info.meta = pathOrOpts.meta;
+      if(!inDev){startCache();}
       return render;
     }
+    if(!inDev){startCache();}
     return render(pathOrOpts, opts);
   };
 
@@ -630,6 +866,11 @@ module.exports = (function(){
   exports.escapeRegex = escapeRegex;
 
   exports.cacheDev = startCache;
+  exports.logSpeed = function(){info.logSpeed = true;};
+
+  exports.beforeCompile = function(cb){info.beforeCompile = cb;};
+  exports.before = function(cb){info.before = cb;};
+  exports.after = function(cb){info.after = cb;};
 
   return exports;
 })();

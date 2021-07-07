@@ -35,8 +35,10 @@ const imdl = require('@aspiesoft/inputmd');
 const express = require('express');
 const app = express();
 
+const {join} = require('path');
+
 app.engine('imdl', imdl(__dirname+'/views', {template: 'layout', cache: '2h'}));
-app.set('views', path.join(__dirname, 'views'));
+app.set('views', join(__dirname, 'views'));
 app.set('view engine', 'imdl');
 
 ```

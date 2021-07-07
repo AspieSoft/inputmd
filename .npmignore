@@ -1,3 +1,6 @@
 .npmignore
+.gitignore
 .github/
 test.js
+views/
+debug.js
