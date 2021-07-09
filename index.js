@@ -3,17 +3,16 @@ const {join, dirname} = require('path');
 
 const debug = requireOptional('./debug') || require('./debug_null');
 
-const cwscLib = require('@aspiesoft/cwsclib');
-const LZUTF8 = require('lzutf8');
+const zlib = require('zlib');
 
 const express = requireOptional('express');
 
 const debugSpeed = debug.time({
-  minSpeed: 0.7,
+  minSpeed: 3,
   slowOnly: true
 });
 
-const __ModuleVersion = '0.0.2';
+const __ModuleVersion = '0.1.0';
 
 
 // todo: add vscode extension for imdl syntax highlighting
@@ -70,7 +69,7 @@ function compress(str, speed){
 
   debugTime('compress');
 
-  str = LZUTF8.compress(str, {outputEncoding: 'ByteArray'});
+  str = zlib.deflateSync(Buffer.from(str, 'utf8'));
 
   debugTime('compress');
 
@@ -78,7 +77,7 @@ function compress(str, speed){
     decomp: function(){
       debugTime('decompress');
 
-      const result = LZUTF8.decompress(str, {inputEncoding: 'ByteArray'});
+      const result = zlib.inflateSync(str).toString('utf8');
 
       debugTime('decompress');
       return result;
@@ -367,7 +366,7 @@ function compile(data){
 
   debugTime('comp: entities');
   // escape special entities
-  data = data.replace(/&;|&(\+-|\?=|\^\/|!=|<=|>=|#[scropid]|\$[cpeyruw]|#pi|[<>&\\\/"'`?=$#*]);?/gsi, (_, char) => {
+  data = data.replace(/&;|&(\+-|\?=|\^\/|!=|<=|>=|#[scropid]|\$[cpeyruw]|#pi|[<>&\\\/"'`?=$#*|(){}\[\]]);?/gsi, (_, char) => {
     if(!char){return '&amp;';}
     switch(char.toLowerCase()){
       case '<': return '&lt;';
@@ -381,6 +380,13 @@ function compile(data){
       case '`': return '&grave;';
       case '?': return '&quest;';
       case '=': return '&equals;';
+      case '|': return '&verbar;';
+      case '(': return '&lpar;';
+      case ')': return '&rpar;';
+      case '{': return '&lcub;';
+      case '}': return '&rcub;';
+      case '[': return '&lsqb;';
+      case ']': return '&rsqb;';
       case '#s': return '&sect;';
       case '#c': return '&copy;';
       case '#r': return '&reg;';
@@ -566,7 +572,135 @@ function compile(data){
 
 function compileMarkdown(data){
 
-  const debugTime = debugSpeed.new({minSpeed: 0.2});
+  const debugTime = debugSpeed.new({minSpeed: 2.5});
+
+  debugTime('md: form');
+  function form_getValue(values, i = 0){
+    let val = values[i];
+    if(Array.isArray(val)){
+      val = val[0];
+    }
+    if(typeof val === 'object'){
+      val = val.value;
+    }
+    return val;
+  }
+
+  data = data.replace(/<form(\s+.*?|)>(.*?)<\/form>/gsi, (_, attrs, body) => {
+    return `<form${attrs}>`+body.replace(/\[(\w+)(\*|)(\s+\w+|)(?:\s*((?:\s*\{(?:\s*(?:[\w_-]+:|)"(?:\\[\\"]|.)*?"\*?\s*|\s*(?:[\w_-]+:|)'(?:\\[\\']|.)*?'\*?\s*)*?\}\s*|\s*(?:[\w_-]+:|)"(?:\\[\\"]|.)*?"\*?\s*|\s*(?:[\w_-]+:|)'(?:\\[\\']|.)*?'\*?\s*)*))\](?:\{(.*?)\}|)/gs, (_, type, required, name, values, attrs) => {
+      if(!attrs){attrs = '';}
+      else{attrs = ' '+attrs;}
+      if(name.trim() === ''){name = undefined;}
+      else{name = name.trim();}
+      let inputName = ` name="${name}"` || '';
+
+      values = values.split(/(\{(?:\s*(?:[\w_-]+:|)"(?:\\[\\"]|.)*?"\*?\s*|\s*(?:[\w_-]+:|)'(?:\\[\\']|.)*?'\*?\s*)*?\}|\s*(?:[\w_-]+:|)"(?:\\[\\"]|.)*?"\*?\s*|\s*(?:[\w_-]+:|)'(?:\\[\\']|.)*?'\*?\s*)/g).filter(v => v !== '').map(value => {
+        value = value.trim();
+        if(value.startsWith('{') && value.endsWith('}')){
+          return value.split(/(\s*(?:[\w_-]+:|)"(?:\\[\\"]|.)*?"\*?\s*|\s*(?:[\w_-]+:|)'(?:\\[\\']|.)*?'\*?\s*)/g).filter(v => v !== '' && v !== '{' && v !== '}').map((val, i) => {
+            val = val.trim();
+            let key = undefined;
+            val = val.replace(/^([\w_-]+):/, (_, k) => {
+              key = k;
+              return '';
+            });
+            if(i === 0){
+              return val.replace(/^(["'])((?:\\[\\"']|.)*?)\1\*?$/, '$2');
+            }
+            let def = val.endsWith('*');
+            val = val.replace(/^(["'])((?:\\[\\"']|.)*?)\1\*?$/, '$2');
+            return {
+              key: key || val.replace(/\s/g, ''),
+              value: val,
+              default: def
+            };
+          });
+        }
+        let key = undefined;
+        value = value.replace(/^([\w_-]+):/, (_, k) => {
+          key = k;
+          return '';
+        });
+        let def = value.endsWith('*');
+        value = value.replace(/^(["'])((?:\\[\\"']|.)*?)\1\*?$/, '$2');
+        return {
+          key: key || value.replace(/\s/g, ''),
+          value: value,
+          default: def
+        };
+      });
+
+      if(type === 'hidden' || type === 'hide' || type === 'value'){
+        return `<input type="hidden"${inputName} value="${(form_getValue(values) || '').replace(/([\\"])/g, '\\$1')}"${required ? ' required' : ''}${attrs}>`;
+      }else if(type === 'submit' || type === 'button'){
+        return `<input type="${type}"${inputName} value="${(form_getValue(values) || name || type).replace(/([\\"])/g, '\\$1')}"${required ? ' required' : ''}${attrs}>`;
+      }else if(type === 'label'){
+        let lFor = '';
+        if(name){lFor = ` for="${name}"`;}
+        return `<label${lFor}${attrs}>${form_getValue(values) || name || ''}</label>`;
+      }else if(type === 'select'){
+        values = values.map(value => {
+          if(Array.isArray(value)){
+            let group = value.shift();
+            value = value.map(val => `<option value="${val.key.replace(/([\\"])/g, '\\$1')}"${val.default ? ' selected' : ''}${attrs}>${val.value}</option>`).join('\n');
+            return `
+            <optgroup label="${group.replace(/([\\"])/g, '\\$1')}">
+              ${value}
+            </optgroup>
+            `;
+          }
+          return `<option value="${value.key.replace(/([\\"])/g, '\\$1')}"${value.default ? ' selected' : ''}${attrs}>${value.value}</option>`;
+        }).join('\n');
+        return `
+        <select${inputName}"${attrs}${required ? ' required' : ''}${attrs}>
+          ${values}
+        </select>
+        `;
+      }else if(type === 'check' || type === 'checkbox' || type === 'accept'){
+        let trueValues = ['true', 'selected', 'checked'];
+        let val0 = form_getValue(values);
+        let val1 = form_getValue(values, 1);
+        let label = undefined;
+        let checked = false;
+        if(val0 && trueValues.includes(val0.toLowerCase())){
+          label = val1;
+          checked = true;
+        }else if(val1 && trueValues.includes(val1.toLowerCase())){
+          label = val0;
+          checked = true;
+        }else if(val0){
+          label = val0;
+        }
+        if(!label && name && name !== ''){
+          label = name.replace(/[_-](\w)/g, (_, l) => ' '+l.toUpperCase());
+        }
+        let labelHTML = '';
+        if(label){
+          let lFor = '';
+          if(name){lFor = ` for="${name}"`;}
+          labelHTML = ` <label${lFor}${attrs}>${label}</label>`;
+        }
+        let acceptClass = '';
+        if(type === 'accept'){acceptClass = ' class="accept"';}
+        return `<input type="checkbox"${inputName}${acceptClass} value="${(label || '').replace(/([\\"])/g, '\\$1')}"${checked ? ' checked' : ''}${attrs}>${labelHTML}`;
+      }else if(type === 'radio'){
+        return values.map(value => {
+          if(Array.isArray(value)){
+            return value.map(val => `<input type="radio"${inputName} id="${val.key.replace(/([\\"])/g, '\\$1')}" value="${val.key.replace(/([\\"])/g, '\\$1')}"${value.default ? ' checked' : ''}><label for="${val.key.replace(/([\\"])/g, '\\$1')}">${val.value}</label>`).join('\n');
+          }
+          return `<input type="radio"${inputName} id="${value.key.replace(/([\\"])/g, '\\$1')}" value="${value.key.replace(/([\\"])/g, '\\$1')}"${value.default ? ' checked' : ''}${required ? ' required' : ''}${attrs}><label for="${value.key.replace(/([\\"])/g, '\\$1')}"${attrs}>${value.value}</label>`;
+        }).join('\n');
+      }else if(type === 'textarea' || type === 'textbox' || type === 'list'){
+        let listClass = '';
+        if(type === 'list'){listClass = ' class="list"';}
+        return `<textarea${inputName}${listClass} placeholder="${(form_getValue(values) || '').replace(/([\\"])/g, '\\$1')}"${required ? ' required' : ''}${attrs}>${(form_getValue(values, 1) || '').replace(/<\/textarea>/g, '&lt;/textarea&gt;')}</textarea>`;
+      }
+
+      return `<input type="${type.replace(/([\\"])/g, '\\$1')}" placeholder="${(form_getValue(values) || '').replace(/([\\"])/g, '\\$1')}" value="${(form_getValue(values, 1) || '').replace(/([\\"])/g, '\\$1')}"${required ? ' required' : ''}${attrs}>`;
+    })+'</form>';
+  });
+  debugTime('md: form');
+
 
   debugTime('md: fonts');
   data = data.replace(/\*\*\*([^*]+)\*\*\*/gs, '<strong><em>$1</em></strong>');
@@ -653,7 +787,22 @@ function compileMarkdown(data){
   debugTime('md: embed');
 
   debugTime('md: link');
-  data = data.replace(/\[(.*?)\]\((.*?)\)/gs, (_, text, link) => `<a href="${link.replace(/([\\"])/g, '\\$1')}">${escapeHtml(text)}</a>`);
+  data = data.replace(/\[(.*?)\]\((.*?)\)(\{.*?\}|)/gs, (_, text, link, target) => {
+    if(target && target !== ''){
+      target = target.replace(/^\{(.*)\}$/, '$1');
+      if(target === '' || target === '_b'){
+        target = '_blank';
+      }else if(target === '_s'){
+        target = '_self';
+      }else if(target === '_p'){
+        target = '_parent';
+      }else if(target === '_t'){
+        target = '_top';
+      }
+      return `<a href="${link.replace(/([\\"])/g, '\\$1')}" target="${target.replace(/([\\"])/g, '\\$1')}">${escapeHtml(text)}</a>`
+    }
+    return `<a href="${link.replace(/([\\"])/g, '\\$1')}">${escapeHtml(text)}</a>`
+  });
   data = data.replace(/([^"'`])((?!["'`])https?:\/\/(?:(?:[\w_-][\w_\-.]+)|)(?:(?:[\w.,@?^=%&:/~+#_-]*[\w.,@?^=%&:/~+#_-])|))/g, (_, q, link) => `${q}<a href="${link.replace(/([\\"])/g, '\\$1')}">${escapeHtml(link)}</a>`);
   debugTime('md: link');
 
@@ -700,6 +849,47 @@ function compileMarkdown(data){
 
   //todo: also add checklist, definition list, forms, inputs, and more to markdown syntax
 
+  debugTime('md: table');
+  data = data.replace(/(?:^{(.*)}$[\r\n]|)^[\t ]*(\|(?:.*?\|)+)[\t ]*$((?:[\r\n]^[\t ]*(?:\|(?:.*?\|)+)[\t ]*$)+)/gm, (_, attrs, row1, rows) => {
+    if(!attrs){attrs = '';}
+    else{attrs = ' '+attrs;}
+    
+    rows = rows.split('\n');
+    rows[0] = row1;
+    rows = rows.map(row => row.split(/[\s\t ]*\|[\s\t ]*/g).filter(i => i.trim() !== ''));
+    if(rows[1][0].match(/^-+$/)){
+      rows.splice(1, 1);
+    }
+
+    let rowSize = 0;
+    rows = rows.map((row, i) => {
+      if(i === 0){
+        rowSize = row.length;
+        return '<tr>'+row.map(col => `<th>${col.replace(/^-+$/, '<hr>')}</th>`).join('\n')+'</tr>';
+      }
+      let altRow = '';
+      if(row.length === 0){
+        altRow = ' class="blank"';
+      }else if(row.length < rowSize){
+        altRow = ' class="small"';
+      }else if(row.length > rowSize){
+        altRow = ' class="big"';
+      }
+      return `<tr${altRow}>`+row.map(col => `<td>${col.replace(/^-+$/, '<hr>')}</td>`).join('\n')+'</tr></tr>';
+    }).join('\n');
+
+    return `<table${attrs}>${rows}</table>`;
+  });
+  debugTime('md: table');
+
+
+  debugTime('md: paragraph');
+  data = data.replace(/(?:^{(.*)}$[\r\n]|)(^[\w*_~].*$(?:[\r\n]^[\w*_~].*$)*)/gm, (_, attrs, body) => {
+    if(!attrs){attrs = '';}
+    else{attrs = ' '+attrs;}
+    return `<p${attrs}>${body}</p>`;
+  });
+  debugTime('md: paragraph');
 
   return data;
 }
@@ -773,6 +963,7 @@ function insertInputs({html, tags}, opts, skipTemplate){
   debugTime('ren: extracted');
   html = html.replace(/\{\{\{?-(script|style|link|meta)\}\}\}?/gs, (str, tag) => {
     if(['script', 'style', 'link', 'meta'].includes(tag.toLowerCase())){
+      if(!tags[tag]){return str;}
       let result = [];
       for(let i = 0; i < tags[tag].length; i++){
         result.push(tags[tag][i].decomp());

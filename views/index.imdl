@@ -4,11 +4,87 @@
 
 {{#test}}
 
+<br><br>
+
+
+Table
+
+{class="test"}
+| name | value |
+| ---- | ----- |
+| a    | 1     |
+| b    | 2     |
+| c    | 3     |
+| more |
+| d | 4 |
+| e    | 5     |
+
+| skip |
+
+
+<br><br>
+Link
+[AspieSoft](https://www.aspiesoft.com)
+
+
+<br><br>
+Link _blank
+[AspieSoft](https://www.aspiesoft.com){}
+
+<br><br>
+Link _parent
+[AspieSoft](https://www.aspiesoft.com){_parent}
+
+<br><br>
+Link _top
+[AspieSoft](https://www.aspiesoft.com){_top}
+
+<br><br>
+Link _self
+[AspieSoft](https://www.aspiesoft.com){_self}
+
+
+<br><br>
+Basic Link
+https://www.aspiesoft.com
+
+
+<form>
+  [label name "Label"]
+  [text* name "placeholder" "default"]{class="input"}
+  <br>
+  [select color {"basic" r:"red" g:"green"* b:"blue" "other"} y:"yellow" p:"purple"]
+  <br>
+  [check confirm "Confirm"]
+  <br>
+  [accept]
+  <br>
+  [radio gender "male" "female"]
+  <br>
+  [textarea]
+  <br>
+  [list]{style="max-width: 100px; height: 150px;"}
+  <br>
+  [email email "email"]
+  <br>
+  [tel tel "tel"]
+  <br>
+  [url url "url"]
+  <br>
+  [number number "number"]
+  <br>
+  [hidden test "1"]
+  <br>
+  [submit]
+</form>
+
+
+
 <style>
-body {
+/*body {
   background: #3d3d3d;
   color: #ffffff;
-}
+}*/
 </style>
 
 <js src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"/>

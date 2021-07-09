@@ -20,6 +20,8 @@ You can import other files in a simple way and can also setup a default template
 Not every part of markdown is included, and some changes were made for better html compatibility.
 Leaving a small amount of markdown so you can have more control over the style of your website.
 
+Inside an html FORM tag, you can use a syntax similar to [WordPress Contact Form 7](https://contactform7.com/tag-syntax/) but there are some differences between the 2.
+
 ## Installation
 
 ```shell script
@@ -155,6 +157,25 @@ https://www.aspiesoft.com
 
 ![mp4](/my/video.mp4){autoplay class="video-style" style="..."}
 
+
+Table
+
+| key | value |
+| --- | ----- |
+| a   | 1     |
+| b   | 2     |
+| c   | 3     |
+| d | 4 |         <!-- Still Works -->
+| e   | 5     |
+|   More      |   <!-- row will be given the class "small" -->
+| f   | 6     |
+| g   | 7     |
+| h   | 8     |
+|             |   <!-- row will be given the class "blank" -->
+| z   | 26 | -1 | <!-- row will be given the class "big" -->
+| i   | 9     |
+| j   | 10    |
+
 ```
 
 There are also some shortcuts for common html entities
@@ -199,3 +220,39 @@ There are also some shortcuts for common html entities
 | &$r | &#8377; |
 | &$u | &#20803; |
 | &$w | &#8361; |
+
+### Forms
+
+```html
+  <form>
+    [label input_name "Label For Input"]
+    [text* input_name "placeholder text" "default value"]{attr="an attribute added to the input" attr2="another attribute"}
+
+    [number number_input "placeholder" "0"]
+
+    [select name {"group" value1:"name 1" value2:"name 2 (default/selected)"* value3:"name 3"} value4:"Item 4" value4:"Item 5"]
+
+    [select color {"basic" r:"red" g:"green"* b:"blue"} y:"yellow" p:"purple"]
+
+    [check myCheckbox "Check This Box :)"]
+    [accept* anotherCheckbox "Accept terms"] <!-- This has the class "accept" added to it -->
+
+    [radio gender "male" "female"]
+
+    [textarea comments "placeholder text" "default value"]
+
+    [list ideas 'a textarea with the class "list" added to it' "Single Quotes Work :) and \"escaped\" quotes"]
+
+    [email email "email"]
+
+    [tel tel "tel"]
+
+    [url url "url"]
+
+    [hidden name "value"]
+
+    [button "Button Value"]
+
+    [submit "Submit"]
+  </form>
+```
