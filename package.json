@@ -1,6 +1,6 @@
 {
   "name": "@aspiesoft/inputmd",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A simple and fast view engine that supports basic markdown syntax.",
   "main": "index.js",
   "engines": {

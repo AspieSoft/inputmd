@@ -12,7 +12,7 @@ const debugSpeed = debug.time({
   slowOnly: true
 });
 
-const __ModuleVersion = '0.1.0';
+const __ModuleVersion = '0.1.1';
 
 
 // todo: add vscode extension for imdl syntax highlighting
@@ -924,7 +924,7 @@ function insertInputs({html, tags}, opts, skipTemplate){
       return file;
     }
 
-    if(opts[str] === undefined || opts[str] === null){
+    if(typeof opts !== 'object' && !Array.isArray(opts)){
       return origStr;
     }
 
@@ -938,15 +938,43 @@ function insertInputs({html, tags}, opts, skipTemplate){
       return s;
     });
 
-    str = opts[str];
+    if(str.includes('.')){
+      let res = undefined;
+      str = str.split('.');
+      let obj = undefined;
+      for(let i = 0; i < str.length; i++){
+        let o = opts[str[i]];
+        if(o === undefined || o === null){
+          res = obj;
+          break;
+        }else if(!Array.isArray(o) && typeof o !== 'object'){
+          res = o;
+          break;
+        }
+        obj = o;
+      }
+      if(res === undefined){
+        str = obj;
+      }else{
+        str = res;
+      }
+    }else{
+      str = opts[str];
+    }
+
+    if(str === undefined || str === null){
+      return origStr;
+    }
 
     if(typeof str === 'function'){
       str = str(opts);
     }
 
-    try{
-      str = JSON.parse(str);
-    }catch(e){}
+    if(typeof str === 'object' || Array.isArray(str)){
+      str = JSON.stringify(str);
+    }else{
+      str = str.toString();
+    }
 
     if(esc){
       str = escapeHtml(str);
@@ -977,7 +1005,7 @@ function insertInputs({html, tags}, opts, skipTemplate){
   html = html.replace(/\<@(script|style|link|meta):([0-9]+)\>/g, (_, tag, i) => {
     i = Number(i)-1;
     if(tags[tag] && tags[tag][i]){
-      if(opts.nonce){
+      if(opts && opts.nonce){
         if(typeof opts.nonce === 'object' && opts.nonce[tag]){
           return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce[tag]}">`);
         }else if(tag === 'script'){
@@ -993,7 +1021,10 @@ function insertInputs({html, tags}, opts, skipTemplate){
   html = html.replace(/\{\{\{?.*?\}\}\}?/g, '');
 
   if(info.template && !skipTemplate && !opts.noTemplate && !opts.noLayout){
-    return getFile(info.template, {body: html, ...opts}, true);
+    if(typeof opts === 'object' || Array.isArray(opts)){
+      return getFile(info.template, {body: html, ...opts}, true);
+    }
+    return getFile(info.template, {body: html}, true);
   }
   return html;
 }
