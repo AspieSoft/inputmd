@@ -12,10 +12,10 @@ const debugSpeed = debug.time({
   slowOnly: true
 });
 
-const __ModuleVersion = '0.1.1';
+const __ModuleVersion = '0.1.2';
 
 
-// todo: add vscode extension for imdl syntax highlighting
+// todo: create vscode extension for imdl syntax highlighting
 
 
 function timeToMS(time){
@@ -139,6 +139,8 @@ function setCache(path, data){
 
 
 function engine(path, opts, cb){
+  opts = {...info.opts, ...opts};
+
   if(info.logSpeed){opts.startTime = new Date().getTime();}
   if(!info.ext){info.ext = path.substr(path.lastIndexOf('.'));}
   if(!info.dir){info.dir = join(path, '..');}
@@ -895,13 +897,7 @@ function compileMarkdown(data){
 }
 
 
-function insertInputs({html, tags}, opts, skipTemplate){
-
-  const debugTime = debugSpeed.new();
-
-  html = html.decomp();
-
-  debugTime('ren: inputs');
+function insertBasicInputs(html, opts){
   html = html.replace(/\{\{\{(.*?)\}\}\}|\{\{(.*?)\}\}/g, (origStr, html, text) => {
     let str = '';
     let esc = true;
@@ -915,8 +911,98 @@ function insertInputs({html, tags}, opts, skipTemplate){
       str = text.toString();
     }
 
+    if(typeof opts !== 'object' && !Array.isArray(opts)){
+      return origStr;
+    }
+
+    str = str.replace(/^([\w_$-]+)=(["']|)(.*?)\2$/, (_, a, q, s) => {
+      attr = a;
+      if(!q || q === ''){
+        quote = '"';
+      }else{
+        quote = q;
+      }
+      return s;
+    });
+
+    if(str.includes('.')){
+      let res = undefined;
+      str = str.split('.');
+      let obj = undefined;
+      for(let i = 0; i < str.length; i++){
+        let o = opts[str[i]];
+        if(o === undefined || o === null){
+          res = obj;
+          break;
+        }else if(!Array.isArray(o) && typeof o !== 'object'){
+          res = o;
+          break;
+        }
+        obj = o;
+      }
+      if(res === undefined){
+        str = obj;
+      }else{
+        str = res;
+      }
+    }else{
+      str = opts[str];
+    }
+
+    if(str === undefined || str === null){
+      return origStr;
+    }
+
+    if(typeof str === 'function'){
+      str = str(opts);
+    }
+
+    if(typeof str === 'object' || Array.isArray(str)){
+      str = JSON.stringify(str);
+    }else{
+      str = str.toString();
+    }
+
+    if(esc){
+      str = escapeHtml(str);
+    }
+
+    if(attr){
+      return `${attr}=${quote}${str.replace(/([\\"'])/g, '\\$1')}${quote}`;
+    }
+
+    return str;
+  });
+
+  html = html.replace(/\{\{\{?.*?\}\}\}?/g, '');
+
+  return html;
+}
+
+
+function insertInputs({html, tags}, opts, skipTemplate){
+
+  const debugTime = debugSpeed.new();
+
+  html = html.decomp();
+
+  debugTime('ren: inputs');
+  html = html.replace(/\{\{\{(.*?)\}\}\}|\{\{(.*?)\}\}/g, (origStr, html, text) => {
+
+    let str = '';
+    let esc = true;
+    let attr = undefined;
+    let quote = undefined;
+
+    if(html && html !== ''){
+      str = html.toString();
+      esc = false;
+    }else if(text && text !== ''){
+      str = text.toString();
+    }
+
     if(str.startsWith('#')){
-      let file = getFile(str.replace('#', ''), opts, true, esc);
+      let file = getFile(str.replace('#(import\s+|)', ''), opts, true, esc);
       if(!file){return origStr;}
       if(esc){
         return escapeHtml(file);
@@ -994,7 +1080,9 @@ function insertInputs({html, tags}, opts, skipTemplate){
       if(!tags[tag]){return str;}
       let result = [];
       for(let i = 0; i < tags[tag].length; i++){
-        result.push(tags[tag][i].decomp());
+        result.push(tags[tag][i].decomp().replace(/^<[\w_-]+[\t\s]+("(?:\\[\\"']|.)*?"|'(?:\\[\\"']|.)*?'|.)*?>/, function(str){
+          return insertBasicInputs(str, opts);
+        }));
       }
       tags[tag] = undefined;
       return result.join('\n');
@@ -1007,12 +1095,18 @@ function insertInputs({html, tags}, opts, skipTemplate){
     if(tags[tag] && tags[tag][i]){
       if(opts && opts.nonce){
         if(typeof opts.nonce === 'object' && opts.nonce[tag]){
-          return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce[tag]}">`);
+          return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce[tag]}">`).replace(/^<[\w_-]+[\t\s]+("(?:\\[\\"']|.)*?"|'(?:\\[\\"']|.)*?'|.)*?>/, function(str){
+            return insertBasicInputs(str, opts);
+          });
         }else if(tag === 'script'){
-          return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce}">`);
+          return tags[tag][i].decomp().replace(/\>$/, ` nonce="${opts.nonce}">`).replace(/^<[\w_-]+[\t\s]+("(?:\\[\\"']|.)*?"|'(?:\\[\\"']|.)*?'|.)*?>/, function(str){
+            return insertBasicInputs(str, opts);
+          });
         }
       }
-      return tags[tag][i].decomp();
+      return tags[tag][i].decomp().replace(/^<[\w_-]+[\t\s]+("(?:\\[\\"']|.)*?"|'(?:\\[\\"']|.)*?'|.)*?>/, function(str){
+        return insertBasicInputs(str, opts);
+      });
     }
     return '';
   });
@@ -1056,6 +1150,7 @@ module.exports = (function(){
         info.style = opts.style || opts.css;
         info.link = opts.link;
         info.meta = opts.meta;
+        info.opts = opts.options || opts.opts || {};
       }
       if(!inDev){startCache();}
       return engine;
@@ -1072,6 +1167,7 @@ module.exports = (function(){
       info.style = pathOrOpts.style || pathOrOpts.css;
       info.link = pathOrOpts.link;
       info.meta = pathOrOpts.meta;
+      info.opts = opts.options || opts.opts || {};
       if(!inDev){startCache();}
       return render;
     }

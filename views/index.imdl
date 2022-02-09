@@ -1,8 +1,19 @@
+<link rel="stylesheet" href="{{static}}/style.css">
+
 # Hello World!
 
 {{{-style}}}
 
 {{#test}}
+
+<br><br>
+
+
+{{var1}}
+
+<br>
+
+{{func1}}
 
 <br><br>
 

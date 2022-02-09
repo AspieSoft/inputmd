@@ -39,7 +39,11 @@ const app = express();
 
 const {join} = require('path');
 
-app.engine('imdl', imdl(__dirname+'/views', {template: 'layout', cache: '2h'}));
+app.engine('imdl', imdl(__dirname+'/views', {
+  template: 'layout',
+  cache: '2h',
+  opts: {default: 'some default options for res.render'}
+}));
 app.set('views', join(__dirname, 'views'));
 app.set('view engine', 'imdl');
 
